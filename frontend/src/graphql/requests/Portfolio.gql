@@ -1,0 +1,25 @@
+fragment BasePortfolio on portfolio {
+  id
+  name
+}
+
+fragment PortfolioAssetsCount on portfolio {
+  assets_aggregate {
+    aggregate {
+      count
+    }
+  }
+}
+
+query Portfolios {
+  portfolios: portfolio {
+    ...BasePortfolio
+    ...PortfolioAssetsCount
+  }
+}
+
+query Portfolio($portfolioId: uuid!) {
+  portfolio: portfolio_by_pk(id: $portfolioId) {
+    ...BasePortfolio
+  }
+}

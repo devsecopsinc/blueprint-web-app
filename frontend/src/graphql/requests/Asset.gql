@@ -1,0 +1,14 @@
+fragment BaseAsset on asset {
+  id
+  name
+  type
+  location
+  portfolioId
+}
+
+query PortfolioAssets($portfolioId: uuid!) {
+  assets: asset(where: { portfolioId: { _eq: $portfolioId } }) {
+    ...BaseAsset
+  }
+}
+

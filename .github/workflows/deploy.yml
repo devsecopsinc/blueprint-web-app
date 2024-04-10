@@ -1,0 +1,353 @@
+name: deploy
+
+on:
+  # Triggers the workflow on push or pull request events but only for the $default-branch branch
+  push:
+    branches: [ main ] # watch non-pr branches
+    tags: [ "*" ]
+  # pull_request:
+  #   branches: [ main ] # only PR to master branch should trigger workflow
+  #   types: [ opened, synchronize, reopened, labeled ] # added labeled to 3 default types
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+# cancel any in-progress jobs running against the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACCOUNT_ID: "<ACCOUNT_ID>"
+  PARTITION: "aws"
+  REGION: "us-east-1"
+  PLATFORM_NAME: "devsecopsinc"
+  PRODUCT: "blueprint"
+  STAGE: "dev"
+  ECR: "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com"
+
+  BASE_URL: "https://blueprint-web-app.devsecopsinc.io"
+  HASURA_GRAPHQL_API_ENDPOINT: "/v1/graphql"
+
+  BACKEND_LABEL: "backend"
+  FRONTEND_LABEL: "frontend"
+  GRAPHQL_LABEL: "graphql"
+
+  BACKEND_DIR: "backend"
+  FRONTEND_DIR: "frontend"
+  GRAPHQL_DIR: "graphql"
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Initialization step
+        run: |
+          echo "This job initializes environment variables for other jobs to use."
+
+    outputs:
+      PARTITION: ${{ env.PARTITION }}
+      ACCOUNT_ID: ${{ env.ACCOUNT_ID }}
+      STAGE: ${{ env.STAGE }}
+      BASE_URL: ${{ env.BASE_URL }}
+
+      FRONTEND_LABEL: ${{ env.FRONTEND_LABEL }}
+      BACKEND_LABEL: ${{ env.BACKEND_LABEL }}
+      GRAPHQL_LABEL: ${{ env.GRAPHQL_LABEL }}
+
+      BACKEND_DIR: ${{ env.BACKEND_DIR }}
+      FRONTEND_DIR: ${{ env.FRONTEND_DIR }}
+      GRAPHQL_DIR: ${{ env.GRAPHQL_DIR }}
+
+      BUILD_PUSH_ROLE: "arn:${{ env.PARTITION }}:iam::${{ env.ACCOUNT_ID }}:role/ci/${{ env.PLATFORM_NAME }}-${{ env.STAGE }}-github"      
+      DEPLOY_ROLE: "arn:${{ env.PARTITION }}:iam::${{ env.ACCOUNT_ID }}:role/ci/${{ env.PLATFORM_NAME }}-${{ env.STAGE }}-github-ecs-deploy"
+
+      ECS_SERVICE_ID_PREFIX: "arn:${{ env.PARTITION }}:ecs:${{ env.REGION }}:${{ env.ACCOUNT_ID }}:service/${{ env.PRODUCT }}-${{ env.STAGE }}-ecs-asg/${{ env.PRODUCT }}-${{ env.STAGE }}"
+      ECS_CLUSTER_NAME: "${{ env.PRODUCT }}-${{ env.STAGE }}-ecs-asg"
+
+  detect-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set docker image tag from branch
+        if: ${{ github.ref_type == 'branch' }}
+        run: |
+          echo "DOCKER_IMAGE_TAG=${GITHUB_REF_NAME////-}.${{ github.run_number }}.${{ github.run_attempt }}" >> $GITHUB_ENV
+
+      - name: Set docker image tag from tag
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          echo "DOCKER_IMAGE_TAG=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
+
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            frontend:
+              - '${{ env.FRONTEND_DIR }}/**'
+            graphql:
+              - '${{ env.GRAPHQL_DIR }}/metadata/**'
+              - '${{ env.GRAPHQL_DIR }}/migrations/**'
+              - '${{ env.GRAPHQL_DIR }}/seeds/**'
+            backend:
+              - '${{ env.BACKEND_DIR }}/**'
+              - '${{ env.BACKEND_DIR }}/metadata/**'
+              - '${{ env.BACKEND_DIR }}/migrations/**'
+              - '${{ env.BACKEND_DIR }}/seeds/**'
+    outputs:
+      frontend_changed: ${{ steps.changes.outputs.frontend == 'true' }}
+      graphql_changed: ${{ steps.changes.outputs.graphql == 'true' }}
+      backend_changed: ${{ steps.changes.outputs.backend == 'true' }}
+      docker_image_tag: ${{ env.DOCKER_IMAGE_TAG }}
+
+  build-frontend:
+    needs:
+      - init
+      - detect-changes
+    if: ${{ needs.detect-changes.outputs.frontend_changed == 'true' }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:      
+      IAM_ROLE: ${{ needs.init.outputs.BUILD_PUSH_ROLE }}
+      IMAGE_TAG: ${{ needs.init.outputs.FRONTEND_LABEL }}:${{ needs.detect-changes.outputs.docker_image_tag }}
+      LATEST_TAG: ${{ needs.init.outputs.FRONTEND_LABEL }}:latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ env.IAM_ROLE }}
+        aws-region: ${{ env.REGION }}
+
+    - uses: dkershner6/aws-ssm-getparameters-action@v2
+      with:
+        parameterPairs: "/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ needs.init.outputs.FRONTEND_LABEL }}/VITE_HASURA_GRAPHQL_ADMIN_SECRET = HASURA_GRAPHQL_ADMIN_SECRET"
+        # The part before equals is the ssm parameterName, and after is the ENV Variable name for the workflow.
+        # No limit on number of parameters. You can put new lines and spaces in as desired, they get trimmed out.
+        withDecryption: "true" # defaults to true
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Copy nginx.conf from .deploy to working directory
+      run: |
+        mkdir -p ${{ env.FRONTEND_DIR }}/conf
+        cp .deploy/nginx/nginx-client.conf ${{ env.FRONTEND_DIR }}/conf/nginx.conf
+        cp .deploy/nginx/cloudflare_ssl.* ${{ env.FRONTEND_DIR }}/conf
+
+    - name: Build docker image
+      env:
+        DOCKER_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.IMAGE_TAG }}
+        LATEST_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.LATEST_TAG }}
+      run: |
+        cd ${{ env.FRONTEND_DIR }}
+        docker build -t ${{ env.DOCKER_IMAGE }} \
+          -t ${{ env.LATEST_IMAGE }} \
+          --cache-from ${{ env.LATEST_IMAGE }} \
+          --build-arg HASURA_GRAPHQL_API_ENDPOINT="${{ env.HASURA_GRAPHQL_API_ENDPOINT }}" \
+          --build-arg HASURA_GRAPHQL_ADMIN_SECRET="${{ env.HASURA_GRAPHQL_ADMIN_SECRET }}" \
+          --build-arg BASE_URL="${{ env.BASE_URL }}" .
+        docker push ${{ env.DOCKER_IMAGE }}
+        docker push ${{ env.LATEST_IMAGE }}
+        echo "::set-output name=image::$DOCKER_IMAGE"
+
+  build-backend:
+    needs:
+      - init
+      - detect-changes
+
+    if: ${{ needs.detect-changes.outputs.backend_changed == 'true' }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IAM_ROLE: ${{ needs.init.outputs.BUILD_PUSH_ROLE }}
+      IMAGE_TAG: ${{ needs.init.outputs.BACKEND_LABEL }}:${{ needs.detect-changes.outputs.docker_image_tag }}
+      LATEST_TAG: ${{ needs.init.outputs.BACKEND_LABEL }}:latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Move 'var' directory from root to build directory
+      run: |
+        mv var ${{ env.BACKEND_DIR }}/
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ env.IAM_ROLE }}
+        aws-region: ${{ env.REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build docker image
+      env:
+        DOCKER_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.IMAGE_TAG }}
+        LATEST_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.LATEST_TAG }}
+      run: |
+        cd ${{ env.BACKEND_DIR }}
+        docker build -t ${{ env.DOCKER_IMAGE }} -t ${{ env.LATEST_IMAGE }} --cache-from ${{ env.LATEST_IMAGE }} .
+        docker push ${{ env.DOCKER_IMAGE }}
+        docker push ${{ env.LATEST_IMAGE }}
+        echo "::set-output name=image::$DOCKER_IMAGE"
+
+  build-graphql:
+    needs:
+      - init
+      - detect-changes
+
+    if: ${{ needs.detect-changes.outputs.graphql_changed == 'true' }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IAM_ROLE: ${{ needs.init.outputs.BUILD_PUSH_ROLE }}
+      IMAGE_TAG: ${{ needs.init.outputs.GRAPHQL_LABEL }}:${{ needs.detect-changes.outputs.docker_image_tag }}
+      LATEST_TAG: ${{ needs.init.outputs.GRAPHQL_LABEL }}:latest
+    defaults:
+      run:
+        working-directory: hasura
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ env.IAM_ROLE }}
+        aws-region: ${{ env.REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build docker image
+      env:
+        DOCKER_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.IMAGE_TAG }}
+        LATEST_IMAGE: ${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.LATEST_TAG }}
+      run: |
+        docker build -t ${{ env.DOCKER_IMAGE }} -t ${{ env.LATEST_IMAGE }} --cache-from ${{ env.LATEST_IMAGE }} .
+        docker push ${{ env.DOCKER_IMAGE }}
+        docker push ${{ env.LATEST_IMAGE }}
+        echo "::set-output name=image::$DOCKER_IMAGE"        
+
+  deploy-frontend:
+    needs:
+      - init
+      - detect-changes
+      - build-frontend
+
+    env:
+      ECS_CLUSTER_NAME: ${{ needs.init.outputs.ECS_CLUSTER_NAME }}
+      ECS_SERVICE_ID_PREFIX: ${{ needs.init.outputs.ECS_SERVICE_ID_PREFIX }}
+      IAM_DEPLOY_ROLE: ${{ needs.init.outputs.DEPLOY_ROLE }}
+
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ env.IAM_DEPLOY_ROLE }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Update Task Definition and Initiate ECS Deployment
+        env:
+          IMAGE_TAG: ${{ needs.detect-changes.outputs.docker_image_tag }}
+        run: |
+          CONTAINER_NAME="${{ env.FRONTEND_LABEL }}"
+          ECS_CLUSTER_NAME="${{ env.ECS_CLUSTER_NAME }}"
+          ECS_SERVICE_ID="${{ env.ECS_SERVICE_ID_PREFIX }}-${{ env.FRONTEND_LABEL }}"
+          TASK_DEFINITION_NAME="${{ env.PRODUCT }}-${{ env.STAGE }}-${{ env.FRONTEND_LABEL }}"
+          REPOSITORY_URI="${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.FRONTEND_LABEL }}"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+
+          bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG
+
+  deploy-backend:
+    needs:
+      - init
+      - detect-changes
+      - build-backend
+
+    env:
+      ECS_CLUSTER_NAME: ${{ needs.init.outputs.ECS_CLUSTER_NAME }}
+      ECS_SERVICE_ID_PREFIX: ${{ needs.init.outputs.ECS_SERVICE_ID_PREFIX }}
+      IAM_DEPLOY_ROLE: ${{ needs.init.outputs.DEPLOY_ROLE }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ env.IAM_DEPLOY_ROLE }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Update Task Definition and Initiate ECS Deployment
+        env:
+          IMAGE_TAG: ${{ needs.detect-changes.outputs.docker_image_tag }}
+        run: |
+          CONTAINER_NAME="${{ env.BACKEND_LABEL }}"
+          ECS_CLUSTER_NAME="${{ env.ECS_CLUSTER_NAME }}"
+          ECS_SERVICE_ID="${{env.ECS_SERVICE_ID_PREFIX}}-${{ env.BACKEND_LABEL }}"
+          TASK_DEFINITION_NAME="${{ env.PRODUCT }}-${{ env.STAGE }}-${{ env.BACKEND_LABEL }}"
+          REPOSITORY_URI="${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.BACKEND_LABEL }}"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+
+          bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG
+
+  deploy-graphql:
+    needs:
+      - init
+      - detect-changes
+      - build-graphql
+
+    env:
+      ECS_CLUSTER_NAME: ${{ needs.init.outputs.ECS_CLUSTER_NAME }}
+      ECS_SERVICE_ID_PREFIX: ${{ needs.init.outputs.ECS_SERVICE_ID_PREFIX }}
+      IAM_DEPLOY_ROLE: ${{ needs.init.outputs.DEPLOY_ROLE }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ env.IAM_DEPLOY_ROLE }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Update Task Definition and Initiate ECS Deployment
+        env:
+          IMAGE_TAG: ${{ needs.detect-changes.outputs.docker_image_tag }}
+        run: |
+          CONTAINER_NAME="${{ env.GRAPHQL_LABEL }}"
+          ECS_CLUSTER_NAME="${{ env.ECS_CLUSTER_NAME }}"
+          ECS_SERVICE_ID="${{env.ECS_SERVICE_ID_PREFIX}}-${{ env.GRAPHQL_LABEL }}"
+          TASK_DEFINITION_NAME="${{ env.PRODUCT }}-${{ env.STAGE }}-${{ env.GRAPHQL_LABEL }}"
+          REPOSITORY_URI="${{ env.ECR }}/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.GRAPHQL_LABEL }}"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+
+          bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG

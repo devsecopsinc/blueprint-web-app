@@ -1,0 +1,18 @@
+overwrite: true
+schema: src/graphql/schema.graphql
+documents: ""
+generates:
+  src/graphql/schema.ts:
+    plugins:
+      - typescript
+      - typescript-operations
+    config:
+      scalars:
+        float8: number
+        uuid: string
+        bigint: number
+        date: string
+        json: Record<string, any>
+        jsonb: Record<string, any>
+        numeric: number
+        timestamptz: string

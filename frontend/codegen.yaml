@@ -1,0 +1,25 @@
+overwrite: true
+schema:
+  - "http://localhost:3001/v1/graphql":
+      headers:
+        X-Hasura-Admin-Secret: password2020
+documents: "./src/graphql/requests/**/*.{gql, graphql}"
+generates:
+  src/graphql/schema.ts:
+    plugins:
+      - typescript
+      - typescript-operations
+      - typed-document-node
+config:
+  namingConvention:
+    typeNames: "change-case-all#pascalCase"
+    transformUnderscore: true
+  scalars:
+    float8: number
+    uuid: string
+    bigint: number
+    date: string
+    json: Record<string, any>
+    jsonb: Record<string, any>
+    numeric: number
+    timestamptz: string
