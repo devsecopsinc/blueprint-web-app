@@ -28,9 +28,9 @@ variable "github" {
 
 variable "autoscaling_instances" {
   type = object({
-    min               = optional(number, 1)
-    max               = optional(number, 3)
-    desired           = optional(number, 2)
+    min     = optional(number, 1)
+    max     = optional(number, 3)
+    desired = optional(number, 2)
 
     # Instance type should support vpc ENI trunking
     # https://docs.aws.amazon.com/AmazonECS/latest/developerguide/container-instance-eni.html#eni-trunking-supported-instance-types
@@ -64,11 +64,13 @@ variable "autoscaling_thresholds" {
 
 variable "app" {
   type = object({
-    name               = string
+    name        = string
+    environment = string
   })
 
   default = {
-    name = "web-app"
+    name        = "web-app"
+    environment = "dev"
   }
 }
 
@@ -79,15 +81,16 @@ variable "domain_name" {
 
 variable "ses_identity_arn" {
   type     = string
+  default  = null
   nullable = true
 }
 
 variable "vpc" {
   type = object({
-    cidr            = string
-    azs             = list(string)
-    public_subnets  = list(string)
-    private_subnets = list(string)
+    cidr             = string
+    azs              = list(string)
+    public_subnets   = list(string)
+    private_subnets  = list(string)
     database_subnets = list(string)
   })
 

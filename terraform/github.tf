@@ -79,8 +79,7 @@ data "aws_iam_policy_document" "ecr_access" {
       "ecr:UploadLayerPart"
     ]
     resources = [
-      local.ecr_wildcard_arn,
-      aws_ecr_repository.lambda-data-pipeline.arn
+      local.ecr_wildcard_arn
     ]
   }
 }
