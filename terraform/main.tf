@@ -14,8 +14,8 @@ provider "aws" {
 }
 
 locals {
-  application = "kean3"
-  env         = "dev"
+  application = var.app.name
+  env         = var.app.environment
   stage       = "${local.application}-${local.env}"
 
   tags = {
