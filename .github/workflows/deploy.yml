@@ -23,13 +23,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ACCOUNT_ID: "<ACCOUNT_ID>"
+  ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   PARTITION: "aws"
-  REGION: "us-east-1"
+  REGION: ${{ secrets.REGION }}
   PLATFORM_NAME: "devsecopsinc"
   PRODUCT: "blueprint"
   STAGE: "dev"
-  ECR: "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com"
+  ECR: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.REGION }}.amazonaws.com"
 
   BASE_URL: "https://blueprint-web-app.devsecopsinc.io"
   HASURA_GRAPHQL_API_ENDPOINT: "/v1/graphql"
@@ -51,6 +51,9 @@ jobs:
           echo "This job initializes environment variables for other jobs to use."
 
     outputs:
+      DEPLOY_ENV: ${{ env.DEPLOY_ENV }}
+      COMPONENTS: ${{ env.COMPONENTS }}
+
       PARTITION: ${{ env.PARTITION }}
       ACCOUNT_ID: ${{ env.ACCOUNT_ID }}
       STAGE: ${{ env.STAGE }}
@@ -159,7 +162,7 @@ jobs:
           --build-arg BASE_URL="${{ env.BASE_URL }}" .
         docker push ${{ env.DOCKER_IMAGE }}
         docker push ${{ env.LATEST_IMAGE }}
-        echo "::set-output name=image::$DOCKER_IMAGE"
+        echo "frontend_image=$DOCKER_IMAGE" >> "$GITHUB_OUTPUT"
 
   build-backend:
     needs:
@@ -201,7 +204,7 @@ jobs:
         docker build -t ${{ env.DOCKER_IMAGE }} -t ${{ env.LATEST_IMAGE }} --cache-from ${{ env.LATEST_IMAGE }} .
         docker push ${{ env.DOCKER_IMAGE }}
         docker push ${{ env.LATEST_IMAGE }}
-        echo "::set-output name=image::$DOCKER_IMAGE"
+        echo "backend_image=$DOCKER_IMAGE" >> "$GITHUB_OUTPUT"
 
   build-graphql:
     needs:
@@ -241,7 +244,7 @@ jobs:
         docker build -t ${{ env.DOCKER_IMAGE }} -t ${{ env.LATEST_IMAGE }} --cache-from ${{ env.LATEST_IMAGE }} .
         docker push ${{ env.DOCKER_IMAGE }}
         docker push ${{ env.LATEST_IMAGE }}
-        echo "::set-output name=image::$DOCKER_IMAGE"        
+        echo "graphql_image=$DOCKER_IMAGE" >> "$GITHUB_OUTPUT"
 
   deploy-frontend:
     needs:
@@ -280,6 +283,15 @@ jobs:
 
           bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG
 
+      - name: Update SSM Parameter with Deployed Version
+        shell: 'script -q -e -c "bash {0}"' # fix error: the input device is not a tty
+        run: |
+          export VERSION_SECRET="/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.FRONTEND_LABEL }}/VERSION"
+          VERSION="${{ env.IMAGE_TAG }}"
+          echo Updating $VERSION_SECRET ssm parameter with $VERSION
+          aws --region ${{ env.REGION }} ssm put-parameter --name $VERSION_SECRET --value $VERSION --overwrite
+          echo VERSION\: ${VERSION}
+
   deploy-backend:
     needs:
       - init
@@ -316,6 +328,15 @@ jobs:
 
           bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG
 
+      - name: Update SSM Parameter with Deployed Version
+        shell: 'script -q -e -c "bash {0}"' # fix error: the input device is not a tty
+        run: |
+          export VERSION_SECRET="/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.BACKEND_LABEL }}/VERSION"
+          VERSION="${{ env.IMAGE_TAG }}"
+          echo Updating $VERSION_SECRET ssm parameter with $VERSION
+          aws --region ${{ env.REGION }} ssm put-parameter --name $VERSION_SECRET --value $VERSION --overwrite
+          echo VERSION\: ${VERSION}
+
   deploy-graphql:
     needs:
       - init
@@ -351,3 +372,12 @@ jobs:
           IMAGE_TAG="${{ env.IMAGE_TAG }}"
 
           bash -x .deploy/deploy.sh $CONTAINER_NAME $ECS_CLUSTER_NAME $ECS_SERVICE_ID $TASK_DEFINITION_NAME $REPOSITORY_URI $IMAGE_TAG
+
+      - name: Update SSM Parameter with Deployed Version
+        shell: 'script -q -e -c "bash {0}"' # fix error: the input device is not a tty
+        run: |
+          export VERSION_SECRET="/${{ env.PRODUCT }}-${{ env.STAGE }}/${{ env.GRAPHQL_LABEL }}/VERSION"
+          VERSION="${{ env.IMAGE_TAG }}"
+          echo Updating $VERSION_SECRET ssm parameter with $VERSION
+          aws --region ${{ env.REGION }} ssm put-parameter --name $VERSION_SECRET --value $VERSION --overwrite
+          echo VERSION\: ${VERSION}
