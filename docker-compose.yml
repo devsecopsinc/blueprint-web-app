@@ -11,7 +11,7 @@ services:
       - ./client:/home/node/app:cached
     environment:
       VITE_HASURA_GRAPHQL_API_ENDPOINT: "http://graphql:3001/v1/graphql"
-      VITE_HASURA_GRAPHQL_ADMIN_SECRET: "password"
+      VITE_HASURA_GRAPHQL_ADMIN_SECRET: $HASURA_GRAPHQL_ADMIN_SECRET
       VITE_BASE_URL: $BASE_URL
     working_dir: /home/node/app
     entrypoint: []
@@ -29,7 +29,7 @@ services:
     volumes:
       - ./var/pgdata:/var/lib/postgresql/data:delegated
     environment:
-      POSTGRES_PASSWORD: pgpasswd
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 10s
@@ -55,17 +55,17 @@ services:
     extra_hosts:
       - "backend:host-gateway"
     environment:
-      HASURA_GRAPHQL_DATABASE_URL: postgres://postgres:pgpasswd@blueprint-db:5432/postgres
+      HASURA_GRAPHQL_DATABASE_URL: $HASURA_GRAPHQL_DATABASE_URL
       HASURA_GRAPHQL_SERVER_PORT: "3001"
       HASURA_GRAPHQL_MIGRATIONS_SERVER_PORT: "3001"
-      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log, query-log
-      HASURA_GRAPHQL_ENABLE_CONSOLE: "true" # set to "false" to disable console
-      HASURA_GRAPHQL_ADMIN_SECRET: password
-      HASURA_GRAPHQL_ENABLE_TELEMETRY: "false"
-      HASURA_GRAPHQL_DEV_MODE: "true"
-      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: "anonymous"
-      HASURA_GRAPHQL_V1_BOOLEAN_NULL_COLLAPSE: "true"
-      HASURA_GRAPHQL_JWT_SECRET: '{"type": "HS256", "key": "1234567890"}'
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: $HASURA_GRAPHQL_ENABLED_LOG_TYPES
+      HASURA_GRAPHQL_ENABLE_CONSOLE: $HASURA_GRAPHQL_ENABLE_CONSOLE
+      HASURA_GRAPHQL_ADMIN_SECRET: $HASURA_GRAPHQL_ADMIN_SECRET
+      HASURA_GRAPHQL_ENABLE_TELEMETRY: $HASURA_GRAPHQL_ENABLE_TELEMETRY
+      HASURA_GRAPHQL_DEV_MODE: $HASURA_GRAPHQL_DEV_MODE
+      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: $HASURA_GRAPHQL_UNAUTHORIZED_ROLE
+      HASURA_GRAPHQL_V1_BOOLEAN_NULL_COLLAPSE: $HASURA_GRAPHQL_V1_BOOLEAN_NULL_COLLAPSE
+      HASURA_GRAPHQL_JWT_SECRET: $HASURA_GRAPHQL_JWT_SECRET
 
   backend:
     container_name: blueprint-backend
@@ -91,8 +91,8 @@ services:
       ENV: development
       HASURA_GRAPHQL_API_ENDPOINT: "http://graphql:3001/v1/graphql"
       HASURA_ACTIONS_PORT: "3003"
-      HASURA_GRAPHQL_ADMIN_SECRET: "password"
-      WEBHOOK_JWT_SECRET: "1234567890"
+      HASURA_GRAPHQL_ADMIN_SECRET: $HASURA_GRAPHQL_ADMIN_SECRET
+      WEBHOOK_JWT_SECRET: $WEBHOOK_JWT_SECRET
       BASE_URL: $BASE_URL
     working_dir: /home/node/app
     entrypoint: []
